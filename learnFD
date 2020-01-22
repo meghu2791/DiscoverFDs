@@ -1,0 +1,205 @@
+import pandas as pd
+import numpy as np
+import sys
+
+#fname = sys.argv[1]
+df = pd.DataFrame.from_csv("D:/UW_Madison/HoloClean/hospital_input.csv")
+#df = pd.DataFrame.from_csv(fname)
+#df = pd.DataFrame(pd.read_csv(fname, sep=' ', na_filter=True));
+
+#df_write1 = pd.DataFrame(pd.read_csv(fname, na_filter=True));
+
+df = df.dropna(axis=1,how='any')
+
+df_write = pd.DataFrame(df)
+#print(df_write)
+#####Clean-up TODO
+#df_write = pd.DataFrame(df.value.values.reshape(-1, 19),
+#                        columns=['provider number', 'hospital name', 'address1', 'address2', 'address3','city',
+#                                 'state',
+#                                 'zip code', 'county name', 'phone number', 'hospital type', 'hospital owner',
+#                                 'emergency service',
+#                                 'condition', 'measure code', 'measure name', 'score', 'sample', 'stateavg'])
+# write formatted output to csv
+#df_write.to_csv("D:/UW_Madison/HoloClean/sorted_output.csv")
+#df_bkp = df_write
+#df_write = pd.DataFrame(df.value.values.reshape(-1, 6),
+ #                       columns=['src', 'flight', 'sched_dep_time', 'act_dep_time', 'sched_arr_time', 'act_arr_time'])
+# Filtering-Preprocessing of data
+#del df_write['address2'], df_write['address3']
+list_colname = df_write.columns
+
+#Output file
+file_FD=open("output.txt","w")
+
+def createFDs_BN():
+    # find paiwise relationship; if MLE exceeds threshold, we assume the attributes are likely to bound to each other
+    # parametrs initialization
+    list_affinity = []
+    df_t=[]
+    list_probabilityOfAB=[]
+    list_findDependency_bayes_AB=[]
+    list_findDependency_bayes_BA=[]
+
+    # Find group events and how likey -> A-B by using (a1,b1), (a2,b2)....(conditional independence)
+    for idx, col in enumerate(df_write.columns):
+        if (idx < df_write.shape[1] - 1):
+            df_t.append(df_write.groupby([col, list_colname[idx + 1]]).size())
+
+    #Calculate probability of occurrence of 2 individual independent events P(A and B)
+    for i in range(len(df_t)):
+        #print((df_t[i]).nlargest(25).sum()/df_t[i].sum())
+        if(df_t[i].sum()!=0):
+            list_probabilityOfAB.append((df_t[i]).nlargest(25).sum()/df_t[i].sum())
+
+    #Calculate probabilities of individual events P(A), P(B)....
+    for idx, col in enumerate(df_write.columns):
+        if(df_write[col].value_counts().sum()!=0):
+	        list_affinity.append(df_write[col].value_counts().nlargest(25).sum() / df_write[col].value_counts().sum())
+
+    print(list_affinity)
+
+    ### build Bayesian network
+    ##Calculate P(B/A)=P(A and B)/P(B)
+    length=list_probabilityOfAB.__len__()
+
+    for i in range(length):
+        #print(list_probabilityOfAB.__getitem__(i))
+        val=list_probabilityOfAB.__getitem__(i%length)/list_affinity[i+1%length]
+        list_findDependency_bayes_AB.append(val*list_affinity[i%length]/list_affinity[i+1%length])
+    print(list_findDependency_bayes_AB)
+
+    ###TODO print dependencies -> 2 sided high probabilities, they aren't directional -> they will hold pairwise markow props
+
+
+    for i in range(length):
+        #print(list_probabilityOfAB.__getitem__(i))
+        val=list_probabilityOfAB.__getitem__((i+1)%length)/list_affinity[i%length]
+        list_findDependency_bayes_BA.append(val*list_affinity[i+1%length]/list_affinity[i%length])
+    print(list_findDependency_bayes_BA)
+
+    parent=[]
+    child=[]
+
+    for i in range(length):
+        if(abs(list_findDependency_bayes_AB[i]-list_findDependency_bayes_BA[i])< 0.2):
+            if((list_findDependency_bayes_AB[i] > 0.9) or (list_findDependency_bayes_BA[i] > 0.9)):
+                #if(np.exp(-max(list_findDependency_bayes_AB[i],list_findDependency_bayes_BA[i]))<=0.6):
+                    print(list_colname[i + 1] + "-" + list_colname[i])
+                    #file_FD.write(list_colname[i + 1] + "-" + list_colname[i])
+                continue
+        else:
+            if(list_findDependency_bayes_AB[i]>0.9):
+                print(list_colname[i+1]+"->"+list_colname[i])
+                parent.append(list_colname[i+1])
+                child.append(list_colname[i])
+            if(list_findDependency_bayes_BA[i]>0.9):
+                print(list_colname[i]+"->"+list_colname[i+1])
+                parent.append(list_colname[i])
+                child.append(list_colname[i+1])
+
+    #Bayesian Network to Factor Graph conversion
+    #print("Learning FDs by converting Bayesian network to factor graphs")
+    #file_FD.write("Learning FDs by converting Bayesian network to factor graphs\n")
+    VX=0
+    count=0
+    for idx, i in enumerate(child):
+        for idx1, j in enumerate(child):
+            if i==j:
+                str1=parent[idx]
+                str2=parent[idx1]
+                if str1!=str2:
+                    df_t1 = pd.DataFrame(df_write.groupby([str1, str2]).size())
+                    df_t1.columns = ['value']
+                    VX=np.exp(-df_t1['value'].nlargest(25).sum() / df_t1['value'].sum())
+                    threshold = np.exp(-np.average(VX))
+                    if VX < threshold+0.1 or VX>=threshold:
+                        #print(str1, '-', str2)
+                        file_FD.write(str1+'-'+str2+'\n')
+
+    for idx, i in enumerate(child):
+        file_FD.write(parent[idx]+'-'+child[idx]+'\n')
+
+    return;
+
+def createFDs_MRF():
+    # Partition function and temperature value assumed to 1.0 for now
+    list_affinity = []
+    VX = []
+    # Pairwise MRF starts here
+    # Find group events and how likely -> A-B by using (a1,b1), (a2,b2)....(conditional independence)
+    for idx, col in enumerate(df_write.columns):
+        if (idx < df_write.shape[1] - 1):
+            df_t = pd.DataFrame(df_write.groupby([col, list_colname[idx + 1]]).size())
+            df_t.columns = ['value']
+            if(df_t['value'].sum()!=0):
+                VX.append(np.exp(-df_t['value'].nlargest(25).sum() / df_t['value'].sum()))
+    threshold = np.exp(-np.average(VX))
+    print(threshold)
+    # Individual events (independent events)
+    for idx, col in enumerate(df_write.columns):
+        list_affinity.append(df_write[col].value_counts() / df_write[col].value_counts().sum())
+        print(df_write[col].value_counts().sum())
+    # Calculate the probability of likelihood using the equation
+    toplist = []
+    for i in list_affinity:
+        toplist.append(i.nlargest(25));
+
+    prob_dist = 0
+
+    probab_likely = VX
+    print(probab_likely)
+
+    #print('Learning FDs with datasets performing pairwise MRFs')
+    #file_FD.write('Learning FDs with datasets performing pairwise MRFs\n')
+    for idx, i in enumerate(probab_likely):
+        if idx < (probab_likely.__len__() - 1):
+            j = idx + 1
+            for j, m in enumerate(probab_likely):
+                if (probab_likely[j] is not VX[idx] and j < (probab_likely.__len__() - 1)):
+                    if ((probab_likely[j]) <= threshold):
+                        str1=list_colname[j] + '-' + list_colname[j + 1] + '\n'
+                        with open("output.txt", "r+") as f:
+                            for line in f:
+                                if str1 in line:
+                                    break
+                            else:
+                                f.write(str1)
+                        #file_FD.write(list_colname[j]+'-'+list_colname[j + 1] + '\n')
+
+    # Pairwise MRF -> Factor Graph starts here
+    # Find group events and how likely -> A-B by using (a1,b1), (a2,b2)....for every attribute
+    VX_factor = []
+    col_names = []
+    threshold1 = []
+    count = 0
+    for idx, col in enumerate(df_write.columns):
+        if (idx < df_write.shape[1] - 1):
+            idx1 = idx + 1
+            col1 = col
+            for idx1, col1 in enumerate(df_write.columns):
+                if ((idx1 < df_write.shape[1] - 1) and idx1 < df_write.__len__() - 1 and col != col1):
+                    df_t1 = pd.DataFrame(df_write.groupby([col, col1]).size())
+                    df_t1.columns = ['value']
+                    col_names.append(col)
+                    col_names.append(col1)
+                    count = count + 1
+                    VX_factor.append(np.exp(-df_t1['value'].nlargest(25).sum() / 1000))
+        threshold1.append(
+            np.exp(-np.sum(VX_factor[count - df_write.columns.__len__():count]) / df_write.columns.__len__()))
+        # print("GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG")
+        # print(VX_factor[count-df_write.columns.__len__():count])
+    #print(threshold1)
+    k = 0
+    print('Learning FDs with datasets by converting pairwise MRFs to Factor Graphs')
+    #file_FD.write('Learning FDs with datasets by converting pairwise MRFs to Factor Graphs')
+    #for idx, i in enumerate(VX_factor):
+       # if (k % threshold1.__len__() == 0 and idx != 0):
+     #       k = k + 1;
+        #if (VX_factor[idx] >= threshold1[k]):
+            # print(col_names[idx], '-', col_names[idx + 1])
+            #file_FD.write(col_names[idx]+'-'+col_names[idx + 1]+'\n')
+    return;
+
+createFDs_MRF()
+createFDs_BN()
